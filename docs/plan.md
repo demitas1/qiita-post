@@ -46,6 +46,7 @@ qiita_id: ""          # 初回投稿後に自動書き込み
 qiita-post <file>              # 投稿（qiita_id の有無で新規/更新を自動判定）
 qiita-post --draft <file>      # 限定公開として投稿（private: true で上書き）
 qiita-post --dry-run <file>    # API を叩かずに送信内容を標準出力に表示
+qiita-post delete <id>         # 記事を削除（確認プロンプトあり）
 qiita-post list                # 投稿済み記事一覧（自分のアカウントの記事）
 qiita-post config show         # 設定ファイルのパスとユーザー名を表示
 ```
@@ -178,28 +179,154 @@ qiita-post/
 
 ### Phase 1: 基本機能
 
-- [ ] `venv` セットアップ・`requirements.txt` 作成
-- [ ] `qiita_api.py`: 認証・設定ファイル読み込み
-- [ ] `qiita_api.py`: POST /api/v2/items（新規作成）
-- [ ] `qiita_api.py`: PATCH /api/v2/items/:id（更新）
-- [ ] `qiita_post.py`: frontmatter 解析（`python-frontmatter`）
-- [ ] `qiita_post.py`: `post` コマンド（新規/更新の自動判定）
-- [ ] `qiita_post.py`: 投稿後に `qiita_id` を frontmatter に書き戻す
-- [ ] `--dry-run` オプション
-- [ ] `scripts/install.sh` 作成
+- [x] `venv` セットアップ・`requirements.txt` 作成
+- [x] `qiita_api.py`: 認証・設定ファイル読み込み
+- [x] `qiita_api.py`: POST /api/v2/items（新規作成）
+- [x] `qiita_api.py`: PATCH /api/v2/items/:id（更新）
+- [x] `qiita_post.py`: frontmatter 解析（`python-frontmatter`）
+- [x] `qiita_post.py`: `post` コマンド（新規/更新の自動判定）
+- [x] `qiita_post.py`: 投稿後に `qiita_id` を frontmatter に書き戻す
+- [x] `--dry-run` オプション
+- [x] `scripts/install.sh` 作成
 
 ### Phase 2: ユーザビリティ
 
-- [ ] `list` コマンド（自分の記事一覧）
-- [ ] `config show` コマンド
-- [ ] `--draft` オプション
-- [ ] エラーハンドリング（401/404/429/5xx）
-- [ ] 429・5xx のリトライ（エクスポネンシャルバックオフ）
+- [x] `list` コマンド（自分の記事一覧）
+- [x] `config show` コマンド
+- [x] `--draft` オプション
+- [x] `delete <id>` コマンド（削除確認プロンプト・`--yes` で省略）
+- [x] エラーハンドリング（401/404/429/5xx）
+- [x] 429・5xx のリトライ（エクスポネンシャルバックオフ）
 
 ### Phase 3: 発展
 
 - [ ] タグ数 5 件超過の警告
 - [ ] `--config` グローバルオプション
+
+---
+
+### Phase 4: 画像アップロード対応（Issue #1）
+
+ローカル画像パスを検出して外部ストレージにアップロードし、Markdown 内の URL を置き換えてから投稿する。
+
+#### 設計
+
+`config.json` に `image_host` を追加してアップロード先を切り替える:
+
+```json
+{
+  "token": "qiita_token",
+  "image_host": "s3",
+  "s3": {
+    "bucket": "your-bucket",
+    "region": "ap-northeast-1",
+    "prefix": "qiita/",
+    "cloudfront_url": "https://xxxxx.cloudfront.net"
+  }
+}
+```
+
+| `image_host` | サービス | 追加 config キー |
+|---|---|---|
+| `s3` | AWS S3 + CloudFront | `s3.bucket`, `s3.cloudfront_url` |
+| `r2` | Cloudflare R2 + CDN | `r2.account_id`, `r2.bucket`, `r2.public_url` |
+
+#### 処理フロー
+
+```
+1. Markdown 本文の ![alt](./local/path.png) を正規表現で検出
+2. http:// / https:// 始まりはスキップ
+3. 指定ホストへアップロード（同一ファイルは重複アップロードしない）
+4. Markdown 内の参照を返却 URL で置き換え
+5. 置き換え後の本文を Qiita API に投稿
+```
+
+参照: `whtwnd-cli/whtwnd_post.py` の `process_markdown_images()` と同じ構造
+
+#### タスク
+
+- [ ] `qiita_api.py` にアップロード共通インターフェース（`upload_image(path) → url`）を追加
+- [ ] S3 アップロード実装（boto3 使用、Issue #2 の前提条件が必要）
+- [ ] R2 アップロード実装（boto3 S3 互換モード、Issue #2 の前提条件が必要）
+- [ ] `qiita_post.py` の `cmd_post` に `process_markdown_images()` を組み込む
+- [ ] `--no-images` オプションでスキップ可能にする
+- [ ] ローカル画像が存在しない場合の警告
+
+---
+
+### Phase 5: クラウドストレージ + CDN インフラ整備（Issue #2）
+
+対象: **AWS S3 + CloudFront** および **Cloudflare R2 + Cloudflare CDN**
+
+#### ストレージ + CDN の比較
+
+| | AWS S3 + CloudFront | Cloudflare R2 + CDN |
+|---|---|---|
+| エグレス料金 | CloudFront 無料枠 1TB/月 | **ゼロ**（R2 の設計原則） |
+| ストレージ料金 | $0.023/GB/月 | 無料枠 10GB/月 |
+| API 互換性 | AWS SDK | **S3 互換**（boto3 流用可） |
+| 推奨用途 | AWS 既存インフラとの統合 | コスト最小化 |
+
+#### aws cli vs boto3 の選定
+
+| | aws cli | boto3 |
+|---|---|---|
+| 依存 | 外部コマンド（別途インストール） | `pip install boto3` で完結 |
+| 実装 | `subprocess` 経由 | Python ネイティブ |
+| エラーハンドリング | exit code | 例外（詳細情報あり） |
+| R2 対応 | △（endpoint 指定） | ✅（S3 互換モード） |
+
+→ **boto3 採用**（Python プロジェクトとの親和性、R2 との共用可能）
+
+#### AWS S3 + CloudFront セットアップ（`docs/s3-setup.md`）
+
+1. S3 バケット作成（非公開、ap-northeast-1）
+2. CloudFront ディストリビューション作成（OAC 設定）
+3. S3 バケットポリシー設定（CloudFront のみ許可）
+4. IAM ユーザー作成（`s3:PutObject` 権限のみ）
+5. `~/.aws/credentials` への認証情報設定
+
+#### Cloudflare R2 + CDN セットアップ（`docs/r2-setup.md`）
+
+1. Cloudflare アカウント作成（無料プラン可）
+2. R2 バケット作成
+3. カスタムドメインまたは R2.dev サブドメイン有効化
+4. API トークン作成（Object Read & Write 権限）
+5. `config.json` に R2 エンドポイントと認証情報を設定
+
+R2 は boto3 の S3 互換モードで接続:  
+`endpoint_url = f"https://{account_id}.r2.cloudflarestorage.com"`
+
+#### config.json 設計
+
+```json
+// S3 + CloudFront
+{
+  "image_host": "s3",
+  "s3": { "bucket": "...", "region": "ap-northeast-1", "prefix": "qiita/", "cloudfront_url": "https://xxxxx.cloudfront.net" }
+}
+
+// Cloudflare R2 + CDN
+{
+  "image_host": "r2",
+  "r2": { "account_id": "...", "bucket": "...", "prefix": "qiita/", "access_key_id": "...", "secret_access_key": "...", "public_url": "https://your-domain.example.com" }
+}
+```
+
+#### コスト試算（100本・年間50,000PV）
+
+| 項目 | S3 + CloudFront | R2 + CDN |
+|---|---|---|
+| ストレージ（7.5MB） | ¥0 | **¥0**（無料枠内） |
+| CDN 転送（3.6GB/年） | **¥0**（無料枠内） | **¥0**（エグレス無料） |
+| **合計** | **¥0〜¥100/年** | **¥0/年** |
+
+#### タスク
+
+- [ ] `docs/s3-setup.md` 作成（AWS コンソール手順）
+- [ ] `docs/r2-setup.md` 作成（Cloudflare コンソール手順）
+- [ ] `requirements.txt` に `boto3` 追加
+- [ ] Phase 4 の S3/R2 実装に必要な認証・設定の確認
 
 ---
 

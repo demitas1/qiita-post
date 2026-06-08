@@ -75,6 +75,14 @@ frontmatter の `private` より優先される。
 qiita_post --dry-run article.md
 ```
 
+### 記事を削除
+
+```bash
+qiita_post delete <qiita_id>
+```
+
+削除前に確認プロンプトが表示される。`--yes` / `-y` で省略可。
+
 ### 記事一覧
 
 ```bash

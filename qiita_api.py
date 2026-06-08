@@ -217,6 +217,27 @@ def list_items(token: str, page: int = 1, per_page: int = 20) -> list[dict]:
     return resp.json()
 
 
+def delete_item(token: str, item_id: str) -> None:
+    """
+    記事を削除する。
+    失敗時は RuntimeError を送出する。
+    """
+    resp = api_request(
+        "DELETE",
+        f"{QIITA_BASE}/items/{item_id}",
+        headers=_auth_headers(token),
+        timeout=15,
+    )
+    if resp.status_code == 401:
+        raise RuntimeError("削除失敗: トークンが無効です。個人アクセストークンを確認してください。")
+    if resp.status_code == 403:
+        raise RuntimeError("削除失敗: この記事を削除する権限がありません。")
+    if resp.status_code == 404:
+        raise RuntimeError(f"削除失敗: 記事が見つかりません (id: {item_id})")
+    if not resp.ok:
+        raise RuntimeError(f"削除失敗: {resp.status_code} {resp.text}")
+
+
 def get_authenticated_user(token: str) -> dict:
     """認証済みユーザー情報を返す。失敗時は sys.exit(1) する。"""
     resp = api_request(

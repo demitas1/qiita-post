@@ -51,7 +51,7 @@ def _inject_post_subcommand():
       qiita_post.py --draft article.md → qiita_post.py post --draft article.md
       qiita_post.py list               → 変更なし
     """
-    KNOWN_SUBCOMMANDS = frozenset(("post", "list", "config"))
+    KNOWN_SUBCOMMANDS = frozenset(("post", "list", "config", "delete"))
     GLOBAL_OPTS_WITH_VALUE = {"--config"}
 
     prog = sys.argv[0]
@@ -221,6 +221,25 @@ def cmd_list(args):
     print(f"{'─'*70}\n")
 
 
+def cmd_delete(args):
+    item_id = args.id.strip()
+
+    if not args.yes:
+        answer = input(f"記事 {item_id} を削除しますか？ [y/N]: ").strip().lower()
+        if answer not in ("y", "yes"):
+            print("削除をキャンセルしました。")
+            return
+
+    token = qiita_api.load_token(args.config)
+    try:
+        qiita_api.delete_item(token, item_id)
+    except RuntimeError as e:
+        print(f"エラー: {e}")
+        sys.exit(1)
+
+    print(f"✓ 記事を削除しました: {item_id}")
+
+
 def cmd_config(args):
     token = qiita_api.load_token(args.config)
     config_path = qiita_api.resolve_config_path(args.config)
@@ -286,6 +305,12 @@ def main():
     p_config = sub.add_parser("config", help="設定を表示")
     p_config.add_argument("action", choices=["show"], help="show: 現在の設定を表示")
     p_config.set_defaults(func=cmd_config)
+
+    # delete サブコマンド
+    p_delete = sub.add_parser("delete", help="記事を削除する")
+    p_delete.add_argument("id", help="削除する記事の Qiita ID")
+    p_delete.add_argument("--yes", "-y", action="store_true", help="確認プロンプトをスキップ")
+    p_delete.set_defaults(func=cmd_delete)
 
     args = parser.parse_args()
 

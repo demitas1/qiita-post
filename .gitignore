@@ -3,3 +3,9 @@ __pycache__/
 *.pyc
 .qiita_config.json
 config.json
+
+# Terraform
+infra/**/.terraform/
+infra/**/*.tfstate
+infra/**/*.tfstate.backup
+infra/**/terraform.tfvars

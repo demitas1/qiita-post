@@ -205,20 +205,45 @@ qiita-post/
 
 ---
 
-### Phase 4: 画像アップロード対応（Issue #1）
+### Phase 4-1: AWS S3 + CloudFront 対応（Issue #1, #2）
 
-ローカル画像パスを検出して外部ストレージにアップロードし、Markdown 内の URL を置き換えてから投稿する。
+AWS S3 + CloudFront を使った画像ホスティングのインフラ構築と Python 実装。  
+Phase 4-2（Cloudflare）とは**完全独立**。コード・設定・Terraform ディレクトリのいずれも共有しない。
 
-#### 設計
+#### 処理フロー
 
-`config.json` に `image_host` を追加してアップロード先を切り替える:
+```
+1. Markdown 本文の ![alt](./local/path.png) を正規表現で検出
+2. http:// / https:// 始まりはスキップ
+3. S3 にアップロード（同一ファイルは ETag で重複アップロードを回避）
+4. Markdown 内の参照を CloudFront URL で置き換え
+5. 置き換え後の本文を Qiita API に投稿
+```
+
+#### ファイル構成
+
+```
+uploader_s3.py          # S3 アップロードモジュール（単独で完結）
+infra/aws/
+  main.tf               # provider 設定（Terraform 1.15.5、hashicorp/aws ~> 5.0）
+  s3.tf                 # S3 バケット（非公開）
+  cloudfront.tf         # CloudFront ディストリビューション + OAC
+  iam.tf                # IAM ユーザー（s3:PutObject 権限のみ）
+  variables.tf
+  outputs.tf            # cloudfront_url, bucket_name
+  .terraform-version    # "1.15.5" を記載
+  terraform.tfvars      # 秘密情報（.gitignore 対象）
+docs/aws-setup.md       # Terraform によるセットアップ手順
+```
+
+#### config.json（AWS 用キーのみ）
 
 ```json
 {
   "token": "qiita_token",
   "image_host": "s3",
   "s3": {
-    "bucket": "your-bucket",
+    "bucket": "your-bucket-name",
     "region": "ap-northeast-1",
     "prefix": "qiita/",
     "cloudfront_url": "https://xxxxx.cloudfront.net"
@@ -226,107 +251,94 @@ qiita-post/
 }
 ```
 
-| `image_host` | サービス | 追加 config キー |
-|---|---|---|
-| `s3` | AWS S3 + CloudFront | `s3.bucket`, `s3.cloudfront_url` |
-| `r2` | Cloudflare R2 + CDN | `r2.account_id`, `r2.bucket`, `r2.public_url` |
+AWS 認証は boto3 のデフォルト credential chain を使用（`~/.aws/credentials` または環境変数）。config.json に認証情報は書かない。
 
-#### 処理フロー
+#### コスト試算（100本・年間50,000PV）
 
-```
-1. Markdown 本文の ![alt](./local/path.png) を正規表現で検出
-2. http:// / https:// 始まりはスキップ
-3. 指定ホストへアップロード（同一ファイルは重複アップロードしない）
-4. Markdown 内の参照を返却 URL で置き換え
-5. 置き換え後の本文を Qiita API に投稿
-```
-
-参照: `whtwnd-cli/whtwnd_post.py` の `process_markdown_images()` と同じ構造
+| 項目 | コスト |
+|---|---|
+| ストレージ（7.5MB） | ¥0（無視できる） |
+| CloudFront 転送（3.6GB/年） | **¥0**（無料枠 1TB/月 以内） |
+| S3 → CloudFront 転送 | **¥0**（無料） |
+| **合計** | **¥0〜¥100/年** |
 
 #### タスク
 
-- [ ] `qiita_api.py` にアップロード共通インターフェース（`upload_image(path) → url`）を追加
-- [ ] S3 アップロード実装（boto3 使用、Issue #2 の前提条件が必要）
-- [ ] R2 アップロード実装（boto3 S3 互換モード、Issue #2 の前提条件が必要）
+- [ ] `infra/aws/` Terraform 構成作成（S3 + CloudFront + IAM）
+- [ ] `docs/aws-setup.md` 作成（Terraform セットアップ手順）
+- [ ] `requirements.txt` に `boto3` 追加
+- [ ] `uploader_s3.py` 実装（`upload(local_path, config) → url`）
 - [ ] `qiita_post.py` の `cmd_post` に `process_markdown_images()` を組み込む
 - [ ] `--no-images` オプションでスキップ可能にする
 - [ ] ローカル画像が存在しない場合の警告
 
 ---
 
-### Phase 5: クラウドストレージ + CDN インフラ整備（Issue #2）
+### Phase 4-2: Cloudflare R2 + CDN 対応（Issue #1, #2）
 
-対象: **AWS S3 + CloudFront** および **Cloudflare R2 + Cloudflare CDN**
+Cloudflare R2 + CDN を使った画像ホスティングのインフラ構築と Python 実装。  
+Phase 4-1（AWS）とは**完全独立**。コード・設定・Terraform ディレクトリのいずれも共有しない。
 
-#### ストレージ + CDN の比較
+#### 処理フロー
 
-| | AWS S3 + CloudFront | Cloudflare R2 + CDN |
-|---|---|---|
-| エグレス料金 | CloudFront 無料枠 1TB/月 | **ゼロ**（R2 の設計原則） |
-| ストレージ料金 | $0.023/GB/月 | 無料枠 10GB/月 |
-| API 互換性 | AWS SDK | **S3 互換**（boto3 流用可） |
-| 推奨用途 | AWS 既存インフラとの統合 | コスト最小化 |
+```
+1. Markdown 本文の ![alt](./local/path.png) を正規表現で検出
+2. http:// / https:// 始まりはスキップ
+3. R2 にアップロード（同一ファイルは ETag で重複アップロードを回避）
+4. Markdown 内の参照を CDN の public_url で置き換え
+5. 置き換え後の本文を Qiita API に投稿
+```
 
-#### aws cli vs boto3 の選定
+#### ファイル構成
 
-| | aws cli | boto3 |
-|---|---|---|
-| 依存 | 外部コマンド（別途インストール） | `pip install boto3` で完結 |
-| 実装 | `subprocess` 経由 | Python ネイティブ |
-| エラーハンドリング | exit code | 例外（詳細情報あり） |
-| R2 対応 | △（endpoint 指定） | ✅（S3 互換モード） |
+```
+uploader_r2.py          # R2 アップロードモジュール（単独で完結）
+infra/cloudflare/
+  main.tf               # provider 設定（Terraform 1.15.5、cloudflare/cloudflare ~> 4.0）
+  r2.tf                 # R2 バケット + カスタムドメイン
+  variables.tf
+  outputs.tf            # public_url, bucket_name
+  .terraform-version    # "1.15.5" を記載
+  terraform.tfvars      # 秘密情報（.gitignore 対象）
+docs/r2-setup.md        # Terraform によるセットアップ手順
+```
 
-→ **boto3 採用**（Python プロジェクトとの親和性、R2 との共用可能）
+#### config.json（R2 用キーのみ）
 
-#### AWS S3 + CloudFront セットアップ（`docs/s3-setup.md`）
-
-1. S3 バケット作成（非公開、ap-northeast-1）
-2. CloudFront ディストリビューション作成（OAC 設定）
-3. S3 バケットポリシー設定（CloudFront のみ許可）
-4. IAM ユーザー作成（`s3:PutObject` 権限のみ）
-5. `~/.aws/credentials` への認証情報設定
-
-#### Cloudflare R2 + CDN セットアップ（`docs/r2-setup.md`）
-
-1. Cloudflare アカウント作成（無料プラン可）
-2. R2 バケット作成
-3. カスタムドメインまたは R2.dev サブドメイン有効化
-4. API トークン作成（Object Read & Write 権限）
-5. `config.json` に R2 エンドポイントと認証情報を設定
+```json
+{
+  "token": "qiita_token",
+  "image_host": "r2",
+  "r2": {
+    "account_id": "your-cloudflare-account-id",
+    "bucket": "your-bucket-name",
+    "prefix": "qiita/",
+    "access_key_id": "your-r2-access-key",
+    "secret_access_key": "your-r2-secret-key",
+    "public_url": "https://your-custom-domain.example.com"
+  }
+}
+```
 
 R2 は boto3 の S3 互換モードで接続:  
 `endpoint_url = f"https://{account_id}.r2.cloudflarestorage.com"`
 
-#### config.json 設計
-
-```json
-// S3 + CloudFront
-{
-  "image_host": "s3",
-  "s3": { "bucket": "...", "region": "ap-northeast-1", "prefix": "qiita/", "cloudfront_url": "https://xxxxx.cloudfront.net" }
-}
-
-// Cloudflare R2 + CDN
-{
-  "image_host": "r2",
-  "r2": { "account_id": "...", "bucket": "...", "prefix": "qiita/", "access_key_id": "...", "secret_access_key": "...", "public_url": "https://your-domain.example.com" }
-}
-```
-
 #### コスト試算（100本・年間50,000PV）
 
-| 項目 | S3 + CloudFront | R2 + CDN |
-|---|---|---|
-| ストレージ（7.5MB） | ¥0 | **¥0**（無料枠内） |
-| CDN 転送（3.6GB/年） | **¥0**（無料枠内） | **¥0**（エグレス無料） |
-| **合計** | **¥0〜¥100/年** | **¥0/年** |
+| 項目 | コスト |
+|---|---|
+| ストレージ（7.5MB） | **¥0**（無料枠 10GB/月 以内） |
+| CDN 転送 | **¥0**（エグレス料金ゼロ） |
+| **合計** | **¥0/年** |
 
 #### タスク
 
-- [ ] `docs/s3-setup.md` 作成（AWS コンソール手順）
-- [ ] `docs/r2-setup.md` 作成（Cloudflare コンソール手順）
-- [ ] `requirements.txt` に `boto3` 追加
-- [ ] Phase 4 の S3/R2 実装に必要な認証・設定の確認
+- [ ] `infra/cloudflare/` Terraform 構成作成（R2 + カスタムドメイン）
+- [ ] `docs/r2-setup.md` 作成（Terraform セットアップ手順）
+- [ ] `uploader_r2.py` 実装（`upload(local_path, config) → url`）
+- [ ] `qiita_post.py` の `cmd_post` に R2 対応を追加（`image_host: "r2"` の場合）
+- [ ] `--no-images` オプションでスキップ可能にする（4-1 との共通処理）
+- [ ] ローカル画像が存在しない場合の警告（4-1 との共通処理）
 
 ---
 

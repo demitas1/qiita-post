@@ -1,0 +1,7 @@
+# terraform.tfvars.example
+# このファイルを terraform.tfvars にコピーして値を設定してください。
+# terraform.tfvars は .gitignore 対象のため、機密情報を記載しても安全です。
+
+cloudflare_api_token = "your-cloudflare-api-token"
+account_id           = "your-cloudflare-account-id"
+# bucket_name        = "qiita-post-images"  # デフォルト値から変更する場合のみ設定

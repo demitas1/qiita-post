@@ -1,0 +1,6 @@
+# terraform.tfvars.example
+# このファイルを terraform.tfvars にコピーして値を設定してください。
+# terraform.tfvars は .gitignore 対象のため、機密情報を記載しても安全です。
+
+bucket_name = "your-qiita-images-unique-name"
+# region    = "ap-northeast-1"  # デフォルト値から変更する場合のみ設定

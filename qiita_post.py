@@ -143,6 +143,10 @@ def cmd_post(args):
         print("エラー: frontmatter に tags が設定されていません（最低1つ必要）。")
         sys.exit(1)
 
+    if len(tag_list) > 5:
+        print(f"警告: タグが {len(tag_list)} 個あります。Qiita は最大5個までです。先頭5個を使用します。")
+        tag_list = tag_list[:5]
+
     tags = build_tags(tag_list)
     private = bool(metadata.get("private", False))
     qiita_id = str(metadata.get("qiita_id", "")).strip()
@@ -256,7 +260,15 @@ def cmd_config(args):
 def main():
     _inject_post_subcommand()
 
+    # --config を全サブコマンドで使えるよう parent parser に切り出す
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument(
+        "--config", metavar="FILE",
+        help="設定ファイルのパス（デフォルト: ~/.config/qiita_post/config.json）",
+    )
+
     parser = argparse.ArgumentParser(
+        parents=[config_parser],
         description="QiitaにMarkdown記事をCLIから投稿するツール",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
@@ -284,30 +296,26 @@ def main():
   ※ https://qiita.com/settings/tokens/new で発行
         """,
     )
-    parser.add_argument(
-        "--config", metavar="FILE",
-        help="設定ファイルのパス（デフォルト: ~/.config/qiita_post/config.json）",
-    )
     sub = parser.add_subparsers(dest="command")
 
     # post サブコマンド
-    p_post = sub.add_parser("post", help="Markdownファイルを投稿（新規作成または更新）")
+    p_post = sub.add_parser("post", parents=[config_parser], help="Markdownファイルを投稿（新規作成または更新）")
     p_post.add_argument("file", help="Markdownファイルのパス")
     p_post.add_argument("--draft", "-d", action="store_true", help="限定公開として投稿（frontmatter の private より優先）")
     p_post.add_argument("--dry-run", action="store_true", dest="dry_run", help="APIを叩かずに送信内容を表示する")
     p_post.set_defaults(func=cmd_post)
 
     # list サブコマンド
-    p_list = sub.add_parser("list", help="投稿済み記事の一覧を表示")
+    p_list = sub.add_parser("list", parents=[config_parser], help="投稿済み記事の一覧を表示")
     p_list.set_defaults(func=cmd_list)
 
     # config サブコマンド
-    p_config = sub.add_parser("config", help="設定を表示")
+    p_config = sub.add_parser("config", parents=[config_parser], help="設定を表示")
     p_config.add_argument("action", choices=["show"], help="show: 現在の設定を表示")
     p_config.set_defaults(func=cmd_config)
 
     # delete サブコマンド
-    p_delete = sub.add_parser("delete", help="記事を削除する")
+    p_delete = sub.add_parser("delete", parents=[config_parser], help="記事を削除する")
     p_delete.add_argument("id", help="削除する記事の Qiita ID")
     p_delete.add_argument("--yes", "-y", action="store_true", help="確認プロンプトをスキップ")
     p_delete.set_defaults(func=cmd_delete)

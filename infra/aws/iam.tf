@@ -7,17 +7,27 @@ resource "aws_iam_access_key" "uploader" {
 }
 
 # アップロード専用の最小権限ポリシー
+# GetObject: HeadObject で ETag 確認（重複アップロード防止）に必要
+# DeleteObject: S3 オブジェクトの削除（管理用途）
+# ListBucket: HeadObject が存在しないキーに対して 404 を返すために必要（なければ 403 になる）
 resource "aws_iam_user_policy" "uploader" {
   name = "qiita-post-s3-upload"
   user = aws_iam_user.uploader.name
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = "s3:PutObject"
-      Resource = "${aws_s3_bucket.images.arn}/*"
-    }]
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"]
+        Resource = "${aws_s3_bucket.images.arn}/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "s3:ListBucket"
+        Resource = aws_s3_bucket.images.arn
+      }
+    ]
   })
 }
 

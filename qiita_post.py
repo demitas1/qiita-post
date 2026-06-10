@@ -29,6 +29,7 @@ qiita_post.py - CLIからQiitaにMarkdown記事を投稿するスクリプト
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -43,13 +44,15 @@ import qiita_api
 def _inject_post_subcommand():
     """
     サブコマンドなしでファイルパスが渡された場合に 'post' を注入する。
-    グローバルオプション（--config VALUE）の後に残った引数を確認し、
-    最初のポジショナル引数がサブコマンドでなければ 'post' を先頭に挿入する。
+    グローバルオプション（--config VALUE）をサブコマンドの直後に移動することで、
+    argparse のサブパーサーが --config を確実に受け取れるようにする。
 
     例:
-      qiita_post.py article.md         → qiita_post.py post article.md
-      qiita_post.py --draft article.md → qiita_post.py post --draft article.md
-      qiita_post.py list               → 変更なし
+      qiita_post.py article.md              → qiita_post.py post article.md
+      qiita_post.py --config f article.md   → qiita_post.py post --config f article.md
+      qiita_post.py --draft article.md      → qiita_post.py post --draft article.md
+      qiita_post.py --config f list         → qiita_post.py list --config f
+      qiita_post.py list                    → 変更なし
     """
     KNOWN_SUBCOMMANDS = frozenset(("post", "list", "config", "delete"))
     GLOBAL_OPTS_WITH_VALUE = {"--config"}
@@ -72,7 +75,13 @@ def _inject_post_subcommand():
     if first_pos is not None and first_pos not in KNOWN_SUBCOMMANDS:
         remaining = ["post"] + remaining
 
-    sys.argv = [prog] + global_part + remaining
+    # グローバルオプションをサブコマンドの直後に移動する。
+    # argparse のサブパーサーは自身より後の引数しか処理しないため、
+    # サブコマンドより前に置くと subparser のデフォルト値に上書きされる。
+    if global_part and remaining and remaining[0] in KNOWN_SUBCOMMANDS:
+        sys.argv = [prog, remaining[0]] + global_part + remaining[1:]
+    else:
+        sys.argv = [prog] + global_part + remaining
 
 
 # ──────────────────────────────────────────────
@@ -110,6 +119,39 @@ def write_back_qiita_id(md_file: Path, qiita_id: str):
     post["qiita_id"] = qiita_id
     with open(md_file, "w", encoding="utf-8") as f:
         f.write(fm.dumps(post))
+
+
+# ──────────────────────────────────────────────
+# 画像処理
+# ──────────────────────────────────────────────
+
+def process_markdown_images(body: str, config: dict, dry_run: bool = False) -> str:
+    """Markdown 本文中のローカル画像参照をクラウド URL に置き換える"""
+    image_host = config.get("image_host")
+    if not image_host:
+        return body
+
+    if image_host == "s3":
+        import uploader_s3
+        uploader = uploader_s3.upload
+    else:
+        print(f"警告: 未対応の image_host: {image_host}（スキップ）")
+        return body
+
+    def _replace(m):
+        alt, path = m.group(1), m.group(2)
+        if path.startswith(("http://", "https://")):
+            return m.group(0)
+        if dry_run:
+            return f"![{alt}](<UPLOAD:{path}>)"
+        try:
+            url = uploader(path, config)
+        except (RuntimeError, FileNotFoundError) as e:
+            print(f"  警告: 画像アップロードをスキップ: {path} ({e})")
+            return m.group(0)
+        return f"![{alt}]({url})"
+
+    return re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', _replace, body)
 
 
 # ──────────────────────────────────────────────
@@ -154,6 +196,13 @@ def cmd_post(args):
     # --draft は private=True で上書き
     if args.draft:
         private = True
+
+    # 画像処理（image_host が設定されている場合）
+    if not args.no_images:
+        _config = qiita_api.load_config(args.config)
+        if _config.get("image_host"):
+            print("[画像処理]")
+            body = process_markdown_images(body, _config, dry_run=args.dry_run)
 
     # --dry-run: API を叩かずに送信内容を表示
     if args.dry_run:
@@ -303,6 +352,7 @@ def main():
     p_post.add_argument("file", help="Markdownファイルのパス")
     p_post.add_argument("--draft", "-d", action="store_true", help="限定公開として投稿（frontmatter の private より優先）")
     p_post.add_argument("--dry-run", action="store_true", dest="dry_run", help="APIを叩かずに送信内容を表示する")
+    p_post.add_argument("--no-images", action="store_true", dest="no_images", help="画像アップロードをスキップする")
     p_post.set_defaults(func=cmd_post)
 
     # list サブコマンド

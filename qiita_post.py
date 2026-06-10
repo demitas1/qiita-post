@@ -34,6 +34,7 @@ import sys
 from pathlib import Path
 
 import frontmatter as fm
+import requests
 import qiita_api
 
 
@@ -155,6 +156,81 @@ def process_markdown_images(body: str, config: dict, dry_run: bool = False) -> s
 
 
 # ──────────────────────────────────────────────
+# 画像バリデーション・ファイル保存
+# ──────────────────────────────────────────────
+
+def _qiita_filepath(md_file: Path) -> Path:
+    """article.md → article.qiita.md"""
+    return md_file.with_stem(md_file.stem + ".qiita")
+
+
+def _save_qiita_file(qiita_file: Path, original_file: Path, body: str):
+    """CloudFront URL 置き換え後の本文を .qiita.md として保存する"""
+    post = fm.load(str(original_file))
+    post.content = body
+    with open(qiita_file, "w", encoding="utf-8") as f:
+        f.write(fm.dumps(post))
+    print(f"  保存: {qiita_file.name}")
+
+
+def _validate_no_local_images(body: str):
+    """ローカル画像リンクがあれば一覧表示して終了する"""
+    issues = []
+    for m in re.finditer(r'!\[([^\]]*)\]\(([^)]+)\)', body):
+        alt, path = m.group(1), m.group(2)
+        if path.startswith(("http://", "https://")):
+            continue
+        note = "（ファイル未存在）" if not Path(path).exists() else ""
+        issues.append(f"  ![{alt}]({path}){note}")
+    if issues:
+        print("エラー: ローカル画像リンクが含まれています:")
+        for line in issues:
+            print(line)
+        print("ヒント: 画像をアップロードするには --no-images を外してください。")
+        sys.exit(1)
+
+
+def _check_remote_image_urls(body: str, abort_on_error: bool) -> bool:
+    """
+    http/https 画像 URL の存在を HEAD リクエストで確認する。
+    abort_on_error=True: 無効な URL があれば終了する（--no-images 用）
+    abort_on_error=False: 無効な URL を警告表示するだけ（--dry-run 用）
+    画像 URL が 1 件もなければ何もしない。有効なら True、無効があれば False を返す。
+    """
+    url_refs = [
+        (m.group(1), m.group(2))
+        for m in re.finditer(r'!\[([^\]]*)\]\(([^)]+)\)', body)
+        if m.group(2).startswith(("http://", "https://"))
+    ]
+    if not url_refs:
+        return True
+
+    print("[画像URL確認]")
+    invalid = []
+    for alt, url in url_refs:
+        try:
+            resp = requests.head(url, allow_redirects=True, timeout=10)
+            if resp.status_code == 405:
+                resp = requests.get(url, allow_redirects=True, timeout=10, stream=True)
+                resp.close()
+            if resp.status_code < 400:
+                print(f"  OK ({resp.status_code}): {url}")
+            else:
+                print(f"  NG ({resp.status_code}): {url}")
+                invalid.append(url)
+        except requests.RequestException as e:
+            print(f"  NG (接続エラー): {url} — {e}")
+            invalid.append(url)
+
+    if invalid:
+        if abort_on_error:
+            print("エラー: アクセスできない画像URLがあります。")
+            sys.exit(1)
+        return False
+    return True
+
+
+# ──────────────────────────────────────────────
 # サブコマンド
 # ──────────────────────────────────────────────
 
@@ -197,15 +273,32 @@ def cmd_post(args):
     if args.draft:
         private = True
 
-    # 画像処理（image_host が設定されている場合）
-    if not args.no_images:
-        _config = qiita_api.load_config(args.config)
-        if _config.get("image_host"):
-            print("[画像処理]")
-            body = process_markdown_images(body, _config, dry_run=args.dry_run)
+    _config = qiita_api.load_config(args.config)
+    image_host = _config.get("image_host")
 
-    # --dry-run: API を叩かずに送信内容を表示
+    # --replace-only は image_host が必須
+    if args.replace_only and (args.no_images or not image_host):
+        print("エラー: --replace-only を使用するには config.json に image_host の設定が必要です。")
+        sys.exit(1)
+
+    if args.no_images:
+        # ローカルリンク検証（中断）→ URL 検証（中断）
+        _validate_no_local_images(body)
+        _check_remote_image_urls(body, abort_on_error=True)
+    elif image_host:
+        # ローカル画像リンクのみアップロード・置き換え
+        print("[画像処理]")
+        body = process_markdown_images(body, _config, dry_run=args.dry_run)
+        if not args.dry_run:
+            qiita_file = _qiita_filepath(md_file)
+            _save_qiita_file(qiita_file, md_file, body)
+        if args.replace_only:
+            return
+
+    # --dry-run: 画像 URL を確認（警告のみ）してペイロードを表示
     if args.dry_run:
+        if not args.no_images:
+            _check_remote_image_urls(body, abort_on_error=False)
         payload = {
             "title": title,
             "body": body,
@@ -352,7 +445,8 @@ def main():
     p_post.add_argument("file", help="Markdownファイルのパス")
     p_post.add_argument("--draft", "-d", action="store_true", help="限定公開として投稿（frontmatter の private より優先）")
     p_post.add_argument("--dry-run", action="store_true", dest="dry_run", help="APIを叩かずに送信内容を表示する")
-    p_post.add_argument("--no-images", action="store_true", dest="no_images", help="画像アップロードをスキップする")
+    p_post.add_argument("--no-images", action="store_true", dest="no_images", help="画像処理をスキップして投稿する（ローカルリンクがあればエラー）")
+    p_post.add_argument("--replace-only", action="store_true", dest="replace_only", help="画像リンクを置き換えて .qiita.md を保存するのみ（Qiita に投稿しない）")
     p_post.set_defaults(func=cmd_post)
 
     # list サブコマンド

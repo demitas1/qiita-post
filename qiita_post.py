@@ -135,6 +135,9 @@ def process_markdown_images(body: str, config: dict, dry_run: bool = False) -> s
     if image_host == "s3":
         import uploader_s3
         uploader = uploader_s3.upload
+    elif image_host == "r2":
+        import uploader_r2
+        uploader = uploader_r2.upload
     else:
         print(f"警告: 未対応の image_host: {image_host}（スキップ）")
         return body

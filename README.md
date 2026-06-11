@@ -51,6 +51,27 @@ export QIITA_TOKEN=your_personal_access_token
 AWS 認証は `~/.aws/credentials` のプロファイルで管理する（`profile` を省略するとデフォルトプロファイルを使用）。  
 インフラ構築手順は `infra/aws/` および `docs/aws-credentials.md` を参照。
 
+### 画像アップロードを使う場合（Cloudflare R2）
+
+```json
+{
+  "token": "your_personal_access_token",
+  "image_host": "r2",
+  "r2": {
+    "account_id":        "your-cloudflare-account-id",
+    "bucket":            "qiita-post-images",
+    "prefix":            "qiita/",
+    "access_key_id":     "your-r2-access-key-id",
+    "secret_access_key": "your-r2-secret-access-key",
+    "public_url":        "https://pub-xxxxxxxx.r2.dev"
+  }
+}
+```
+
+R2 API トークン（`access_key_id` / `secret_access_key`）は Cloudflare ダッシュボード > R2 > Account Details > API Tokens から発行する。  
+`public_url` はバケットの Settings > Public Development URL で有効化後に表示される URL を設定する。  
+インフラ構築手順は `infra/cloudflare/` および `docs/r2-setup.md` を参照。
+
 ## 記事ファイルのフォーマット
 
 ```markdown
